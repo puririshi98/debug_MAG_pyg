@@ -36,3 +36,4 @@ threadpoolctl==3.0.0
 tqdm==4.62.3
 typing-extensions==3.10.0.2
 ipython_autotime==0.3.1
+dllogger

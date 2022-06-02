@@ -35,20 +35,6 @@ def make_pyg_loader(graph, device):
     )
 
 
-class NodeDataObject:
-    def __init__(self, data):
-        self.data = data
-
-    def get_labels(self, batch):
-        return batch["v0"].y
-
-    def build_train_dataloader_post_dist(self, device, use_ddp):
-        self.train_dataloader = make_pyg_loader(
-            self.data,
-            device,
-        )
-
-
 class RelGraphConvLayer(nn.Module):
     r"""Relational graph convolution layer.
     Parameters
@@ -240,7 +226,7 @@ def is_main_process():
 class Trainer:
     def __init__(
         self,
-        data_object,
+        data,
         model,
         optimizers,
         criterion,
@@ -248,7 +234,7 @@ class Trainer:
         omp_num_threads=None,
         **kwargs,
     ):
-        self.data_object = data_object
+        self.data = data
         self.model = model
         self.optimizers = optimizers
         self.criterion = criterion
@@ -322,8 +308,10 @@ class Trainer:
             device = torch.device("cuda:0")
         else:
             device = torch.device("cpu")
-
-        self.data_object.build_train_dataloader_post_dist(device, use_ddp)
+        self.train_dataloader = make_pyg_loader(
+            self.data,
+            device,
+        )
         self.initialize_module(self.model, device)
         self.model = self.model.to(device)
 
@@ -338,7 +326,7 @@ class Trainer:
 
     def do_train_epoch(self):
         train_step = 0
-        for step, batch in enumerate(self.data_object.train_dataloader):
+        for step, batch in enumerate(self.train_dataloader):
             train_step = step + 1
             self.step(batch, mode="train")
             if is_main_process():
@@ -391,9 +379,6 @@ def test_mag_workflow(n_gpus):
     torch_geometric.seed.seed_everything(42)
     data = FakeHeteroDataset(avg_num_nodes=20000).generate_data()
     print(data)
-    data_object = NodeDataObject(
-        data=data,
-    )
     model = HeteroModule(
         dim_in={
             node_type: data[node_type].x.shape[-1] for node_type in data.node_types
@@ -415,7 +400,7 @@ def test_mag_workflow(n_gpus):
     )
 
     trainer = Trainer(
-        data_object=data_object,
+        data=data,
         model=model,
         optimizers=[optimizers],
         criterion=nn.CrossEntropyLoss(),

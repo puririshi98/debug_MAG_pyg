@@ -10,8 +10,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
-import torch_geometric.transforms as T
-from torch_geometric.loader import NeighborLoader
+
 import dllogger
 import numpy as np
 import pandas as pd
@@ -22,17 +21,22 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as opt
 import torch_geometric
+import torch_geometric.transforms as T
 from dllogger import Logger, StdOutBackend
 from ogb.nodeproppred import NodePropPredDataset
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch_geometric.data import HeteroData
+from torch_geometric.loader import NeighborLoader
 from torch_geometric.nn.conv import HeteroConv, MessagePassing, SAGEConv
+
 
 def empty_step_format(step):
     return ""
 
+
 def empty_prefix_format(timestamp):
     return ""
+
 
 def get_framework_env_vars():
     return {
@@ -59,6 +63,7 @@ def no_string_metric_format(metric, metadata, value):
     return "{} : {} {}".format(
         metric, format.format(value) if value is not None else value, unit
     )
+
 
 def setup_logger(rank, resume_training=False):
     if rank == 0:
@@ -947,13 +952,13 @@ class DataObject:
         return self.construct_cache.get("graph")
 
 
-
 class DefaultNodeTargetExtractionPolicy:
     def __call__(self, data_object, batch, output, device):
         output, target = get_logit_labels_types_block(
             batch, output, data_object.node_label_map, device
         )
         return output, target
+
 
 class NodeDataObject(DataObject):
     def __init__(
@@ -1657,6 +1662,7 @@ def get_rank():
 def is_main_process():
     return get_rank() == 0
 
+
 class GradientClipper:
     def __init__(self, parameters, max_norm, norm_type):
         self._parameters = parameters
@@ -1667,6 +1673,7 @@ class GradientClipper:
         torch.nn.utils.clip_grad_norm_(
             self._parameters, self._max_norm, self._norm_type
         )
+
 
 class OptWrapper:
     def __init__(
@@ -1702,7 +1709,6 @@ class OptWrapper:
             )
 
         return output
-
 
 
 class Trainer:
@@ -2179,11 +2185,9 @@ class Trainer:
         if self.n_gpus > 1:
             torch.distributed.barrier()
 
-
     def on_valid_end(self, metrics):
         if self.n_gpus > 1:
             torch.distributed.barrier()
-
 
     def on_test_begin(self, metrics):
         self.model.eval()
@@ -2192,11 +2196,9 @@ class Trainer:
         if self.n_gpus > 1:
             torch.distributed.barrier()
 
-
     def on_test_end(self, metrics):
         if self.n_gpus > 1:
             torch.distributed.barrier()
-
 
     def initialize_module(self, module, device):
         for child in module.children():

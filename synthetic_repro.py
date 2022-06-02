@@ -34,7 +34,6 @@ def get_framework_env_vars():
     }
 
 
-
 class Device:
     # assume nvml returns list of 64 bit ints
     _nvml_bit_affinity = 64
@@ -675,6 +674,7 @@ def reduce_tensor(tensor, num_gpus, average=False):
             rt = rt // num_gpus
     return rt
 
+
 def get_rank():
     """
     Gets distributed rank or returns zero if distributed is not initialized.
@@ -888,7 +888,7 @@ class Trainer:
         for step, batch in enumerate(self.data_object.train_dataloader):
             train_step = step + 1
             self.step(batch, mode="train")
-            print('finished step', step)
+            print("finished step", step)
             if self.limit_batches is not None and step + 1 >= self.limit_batches:
                 break
 
@@ -898,9 +898,9 @@ class Trainer:
     def forward_pass(self, batch):
         with torch.cuda.amp.autocast(enabled=self.amp_enabled):
             output = self.model(batch)
-            y = batch['v0'].y
+            y = batch["v0"].y
             target = y[:1024]
-            out = output['v0'][:1024]
+            out = output["v0"][:1024]
             loss = self.criterion(out, target)
 
             return output, target, loss
@@ -924,7 +924,6 @@ class Trainer:
 
         if self.n_gpus > 1:
             loss = reduce_tensor(loss, self.n_gpus, average=True)
-
 
     def on_epoch_end(self):
         if self.n_gpus > 1:

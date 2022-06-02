@@ -21,14 +21,6 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.nn.conv import HeteroConv, MessagePassing, SAGEConv
 
 
-def empty_step_format(step):
-    return ""
-
-
-def empty_prefix_format(timestamp):
-    return ""
-
-
 def get_framework_env_vars():
     return {
         "NVIDIA_PYTORCH_VERSION": os.environ.get("NVIDIA_PYTORCH_VERSION"),
@@ -43,44 +35,6 @@ def get_framework_env_vars():
         "NVIDIA_TF32_OVERRIDE": os.environ.get("NVIDIA_TF32_OVERRIDE"),
     }
 
-
-def no_string_metric_format(metric, metadata, value):
-    unit = metadata["unit"] if "unit" in metadata.keys() else ""
-    format = "{" + metadata["format"] + "}" if "format" in metadata.keys() else "{}"
-    if metric == "String":
-        return "{} {}".format(
-            format.format(value) if value is not None else value, unit
-        )
-    return "{} : {} {}".format(
-        metric, format.format(value) if value is not None else value, unit
-    )
-
-
-def setup_logger(rank, resume_training=False):
-    if rank == 0:
-        backends = [
-            StdOutBackend(
-                verbosity=dllogger.Verbosity.DEFAULT,
-                step_format=empty_step_format,
-                metric_format=no_string_metric_format,
-                prefix_format=empty_prefix_format,
-            ),
-        ]
-
-        logger = Logger(backends=backends)
-    else:
-        logger = Logger(backends=[])
-    container_setup_info = get_framework_env_vars()
-    logger.log(
-        step="PARAMETER",
-        data=container_setup_info,
-        verbosity=dllogger.Verbosity.DEFAULT,
-    )
-
-    if not resume_training:
-        logger.metadata("loss", {"unit": "nat", "GOAL": "MINIMIZE", "STAGE": "TRAIN"})
-        logger.metadata("val_loss", {"unit": "nat", "GOAL": "MINIMIZE", "STAGE": "VAL"})
-    return logger
 
 
 class Device:
@@ -750,16 +704,6 @@ def reduce_tensor(tensor, num_gpus, average=False):
             rt = rt // num_gpus
     return rt
 
-
-def reduce_metrics(metrics, num_gpus, average=False):
-    out = {}
-    for k, v in metrics.items():
-        reduced = reduce_tensor(v, num_gpus, average=average).tolist()
-        out[k] = reduced
-
-    return out
-
-
 def get_rank():
     """
     Gets distributed rank or returns zero if distributed is not initialized.
@@ -842,9 +786,7 @@ class Trainer:
         n_gpus=1,
         epochs=10,
         amp_enabled=False,
-        log_frequency=100,
         user_callback_list=[],
-        eval_interval=1,
         limit_batches=None,
         omp_num_threads=None,
         **kwargs,
@@ -859,26 +801,18 @@ class Trainer:
         self.n_gpus = n_gpus
         self.epochs = epochs
         self.amp_enabled = amp_enabled
-        self.log_frequency = log_frequency
-        self.eval_interval = eval_interval
         self.limit_batches = limit_batches
         self.omp_num_threads = omp_num_threads
         self.kwargs = kwargs
 
         self.epoch = 0
         self.train_steps = -1
-        self.valid_steps = -1
-        self.test_steps = -1
         self.global_step = 0
         self.procs = []
         self.schedulers = []
         self.clip_gradients = []
         self.metrics = metrics or {}
         self.is_training = False
-
-        self.logged_train_metrics = {}
-        self.logged_valid_metrics = {}
-        self.logged_test_metrics = {}
 
         self.check_parameters()
 
@@ -921,28 +855,22 @@ class Trainer:
 
         return metrics
 
-    def train_procedure(self, callback_metrics):
-        self.do_train_epoch(callback_metrics)
+    def train_procedure(self):
+        self.do_train_epoch()
         if self.rank == 0:
             print("TRAIN METRICS")
             print(self.logged_train_metrics)
 
     def fit_process(self, rank=0):
         self.setup(rank)
-        callback_metrics = {}
-        self.on_train_begin(callback_metrics)
+        self.on_train_begin()
 
         while self.epoch < self.epochs:
-            self.on_epoch_begin(callback_metrics)
-            self.train_procedure(callback_metrics)
-            self.on_epoch_end(callback_metrics)
+            self.on_epoch_begin()
+            self.train_procedure()
+            self.on_epoch_end()
 
-        self.on_train_end(callback_metrics)
-
-        if self.n_gpus > 1:
-            callback_metrics_ = reduce_metrics(callback_metrics, self.n_gpus)
-            for k, v in callback_metrics_.items():
-                callback_metrics[k] = v
+        self.on_train_end()
 
     def setup(self, rank):
         use_ddp = self.n_gpus > 1
@@ -994,29 +922,19 @@ class Trainer:
         self.device = device
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
-    def do_train_epoch(self, callback_metrics):
-        self.on_train_epoch_begin(callback_metrics)
+    def do_train_epoch(self):
+        self.on_train_epoch_begin()
         data = {}
         train_step = 0
         for step, batch in enumerate(self.data_object.train_dataloader):
             train_step = step + 1
-            self.on_batch_begin(step, callback_metrics)
-            callback_metrics = self.step(batch, mode="train")
-            for k, v in callback_metrics.items():
-                data[k] = data.get(k, 0.0) + v
-            self.on_batch_end(step, callback_metrics)
+            self.step(batch, mode="train")
             print('finished step', step)
             if self.limit_batches is not None and step + 1 >= self.limit_batches:
                 break
 
         self.train_steps = train_step
-
-        for k, v in data.items():
-            data[k] = v / len(self.data_object.train_dataloader)
-
-        self.logged_train_metrics = data
-
-        self.on_train_epoch_end(callback_metrics)
+        self.on_train_epoch_end()
 
     def forward_pass(self, batch):
         with torch.cuda.amp.autocast(enabled=self.amp_enabled):
@@ -1049,12 +967,8 @@ class Trainer:
         if self.n_gpus > 1:
             loss = reduce_tensor(loss, self.n_gpus, average=True)
 
-        metrics["loss"] = loss.item()
-        return metrics
-
     def on_train_begin(self, metrics):
         self.is_training = True
-        return
 
     def on_train_end(self, metrics):
         self.logger.flush()
@@ -1064,55 +978,25 @@ class Trainer:
 
         self.is_training = False
 
-    def on_train_epoch_begin(self, metrics):
+    def on_train_epoch_begin(self):
         self.model.train()
         self.criterion.train()
         return
 
-    def on_train_epoch_end(self, metrics):
-        self.logger.flush()
-
+    def on_train_epoch_end(self):
         if self.n_gpus > 1:
             torch.distributed.barrier()
 
-    def on_epoch_begin(self, metrics):
-        self.logger.log(
-            step=self.global_step,
-            data={"epoch": self.epoch},
-            verbosity=dllogger.Verbosity.VERBOSE,
-        )
+    def on_epoch_begin(self):
         if self.n_gpus > 1:
             torch.distributed.barrier()
 
-    def on_epoch_end(self, metrics):
+    def on_epoch_end(self):
         if self.n_gpus > 1:
             torch.distributed.barrier()
         self.epoch += 1
         for scheduler in self.schedulers:
             scheduler.step()
-        return
-
-    def on_batch_begin(self, step, metrics, synchronise=False):
-        if synchronise:
-            if self.n_gpus > 1:
-                torch.distributed.barrier()
-
-        return
-
-    def on_batch_end(self, step, metrics, synchronise=False):
-        if synchronise:
-            if self.n_gpus > 1:
-                torch.distributed.barrier()
-
-        non_tensor_metrics = metrics_list_to_num_dict(metrics)
-        self.logger.log(
-            step=self.global_step,
-            data=non_tensor_metrics,
-            verbosity=dllogger.Verbosity.VERBOSE,
-        )
-        self.global_step += 1
-        if self.global_step % self.log_frequency == 0:
-            self.logger.flush()
 
     def initialize_module(self, module, device):
         for child in module.children():

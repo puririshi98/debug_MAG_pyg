@@ -3,8 +3,6 @@ import itertools
 import os
 import pathlib
 import re
-import time
-from pathlib import Path
 
 import pynvml
 import torch
@@ -490,12 +488,6 @@ class NodeDataObject:
         )
 
 
-class ExampleMSE:
-    def __call__(self, output, target):
-        diff_sq = (output - target) ** 2
-        return diff_sq.mean()
-
-
 class RelGraphConvLayer(nn.Module):
     r"""Relational graph convolution layer.
     Parameters
@@ -580,12 +572,6 @@ class RelGraphConvLayer(nn.Module):
             if self.activation is not None:
                 h[node_type] = self.activation(h[node_type])
         return h
-
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}({self.in_channels}, "
-            f"{self.out_channels}, num_relations={self.num_relations})"
-        )
 
 
 class HeteroModule(nn.Module):
@@ -690,54 +676,6 @@ def is_main_process():
     return get_rank() == 0
 
 
-class GradientClipper:
-    def __init__(self, parameters, max_norm, norm_type):
-        self._parameters = parameters
-        self._max_norm = max_norm
-        self._norm_type = norm_type
-
-    def __call__(self):
-        torch.nn.utils.clip_grad_norm_(
-            self._parameters, self._max_norm, self._norm_type
-        )
-
-
-class OptWrapper:
-    def __init__(
-        self,
-        model,
-        opt_partial=None,
-        scheduler_partial=None,
-        clip_gradient_norm_type=None,
-        clip_gradient_max_norm=None,
-    ):
-        self.model = model
-        self.opt_partial = opt_partial
-        self.scheduler_partial = scheduler_partial
-        self.clip_gradient_norm_type = clip_gradient_norm_type
-        self.clip_gradient_max_norm = clip_gradient_max_norm
-
-    def build(self):
-        output = {}
-        params = list(self.model.parameters())
-
-        output["optimizer"] = self.opt_partial(params)
-        if self.scheduler_partial is not None:
-            output["scheduler"] = self.scheduler_partial(output["optimizer"])
-
-        if (
-            self.clip_gradient_norm_type is not None
-            and self.clip_gradient_max_norm is not None
-        ):
-            output["gradient_clipper"] = GradientClipper(
-                parameters=params,
-                max_norm=self.clip_gradient_max_norm,
-                norm_type=self.clip_gradient_norm_type,
-            )
-
-        return output
-
-
 class Trainer:
     def __init__(
         self,
@@ -745,34 +683,15 @@ class Trainer:
         model,
         optimizers,
         criterion,
-        output_dir="./outputs/{}-{}-{}/{}-{}-{}".format(
-            time.localtime().tm_year,
-            time.localtime().tm_mon,
-            time.localtime().tm_mday,
-            time.localtime().tm_hour,
-            time.localtime().tm_min,
-            time.localtime().tm_sec,
-        ),
-        metrics=None,
         n_gpus=1,
-        epochs=10,
-        amp_enabled=False,
-        user_callback_list=[],
-        limit_batches=None,
         omp_num_threads=None,
         **kwargs,
     ):
-        self.output_dir = output_dir
-
-        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
         self.data_object = data_object
         self.model = model
         self.optimizers = optimizers
         self.criterion = criterion
         self.n_gpus = n_gpus
-        self.epochs = epochs
-        self.amp_enabled = amp_enabled
-        self.limit_batches = limit_batches
         self.omp_num_threads = omp_num_threads
         self.kwargs = kwargs
 
@@ -780,18 +699,7 @@ class Trainer:
         self.train_steps = -1
         self.global_step = 0
         self.procs = []
-        self.schedulers = []
-        self.clip_gradients = []
-        self.metrics = metrics or {}
         self.is_training = False
-
-        self.check_parameters()
-
-        return
-
-    def check_parameters(self):
-        if self.limit_batches is not None:
-            assert self.limit_batches >= 1
 
     def fit(self):
         """
@@ -818,21 +726,17 @@ class Trainer:
                 nprocs=self.n_gpus,
                 join=False,
             )
-            metrics = parent_conn.recv()
+            parent_conn.recv()
             parent_conn.close()
             pc.join()
         else:
-            metrics = self.fit_process()
-
-        return metrics
+            self.fit_process()
 
     def fit_process(self, rank=0):
         self.setup(rank)
         self.model.train()
         self.criterion.train()
-
-        while self.epoch < self.epochs:
-            self.do_train_epoch()
+        self.do_train_epoch()
 
     def setup(self, rank):
         use_ddp = self.n_gpus > 1
@@ -863,16 +767,6 @@ class Trainer:
         self.initialize_module(self.model, device)
         self.model = self.model.to(device)
 
-        for i in range(len(self.optimizers)):
-            if isinstance(self.optimizers[i], OptWrapper):
-                opt_out = self.optimizers[i].build()
-                self.optimizers[i] = opt_out["optimizer"]
-                if opt_out.get("scheduler", None) is not None:
-                    self.schedulers.append(opt_out["scheduler"])
-                if opt_out.get("gradient_clipper", None) is not None:
-                    clipper = opt_out["gradient_clipper"]
-                    self.clip_gradients.append(clipper)
-
         if use_ddp:
             self.model = DDP(
                 self.model,
@@ -881,29 +775,29 @@ class Trainer:
             )
 
         self.device = device
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
     def do_train_epoch(self):
         train_step = 0
         for step, batch in enumerate(self.data_object.train_dataloader):
             train_step = step + 1
             self.step(batch, mode="train")
-            print("finished step", step)
-            if self.limit_batches is not None and step + 1 >= self.limit_batches:
+            if is_main_process():
+                print("finished step", step)
+            if step >= 5:
                 break
 
         self.train_steps = train_step
-        self.on_epoch_end()
+        if self.n_gpus > 1:
+            torch.distributed.barrier()
 
     def forward_pass(self, batch):
-        with torch.cuda.amp.autocast(enabled=self.amp_enabled):
-            output = self.model(batch)
-            y = batch["v0"].y
-            target = y[:1024]
-            out = output["v0"][:1024]
-            loss = self.criterion(out, target)
+        output = self.model(batch)
+        y = batch["v0"].y
+        target = y[:1024]
+        out = output["v0"][:1024]
+        loss = self.criterion(out, target)
 
-            return output, target, loss
+        return output, target, loss
 
     def step(self, batch, mode="train"):
         for optimizer in self.optimizers:
@@ -911,26 +805,10 @@ class Trainer:
 
         output, target, loss = self.forward_pass(batch)
 
-        self.scaler.scale(loss).backward()
-        loss = loss.detach()
-
-        for gradient_clipper in self.clip_gradients:
-            gradient_clipper()
-
-        for optimizer in self.optimizers:
-            self.scaler.step(optimizer)
-
-        self.scaler.update()
+        loss.backward()
 
         if self.n_gpus > 1:
             loss = reduce_tensor(loss, self.n_gpus, average=True)
-
-    def on_epoch_end(self):
-        if self.n_gpus > 1:
-            torch.distributed.barrier()
-        self.epoch += 1
-        for scheduler in self.schedulers:
-            scheduler.step()
 
     def initialize_module(self, module, device):
         for child in module.children():
@@ -982,9 +860,6 @@ def test_mag_workflow(n_gpus):
         optimizers=[optimizers],
         criterion=nn.CrossEntropyLoss(),
         n_gpus=n_gpus,
-        epochs=1,
-        metrics={"example_mse_1": ExampleMSE()},
-        limit_batches=5,
     )
 
     trainer.fit()

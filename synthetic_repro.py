@@ -6,7 +6,6 @@ import re
 import time
 from pathlib import Path
 
-import dllogger
 import pynvml
 import torch
 import torch.distributed as dist
@@ -885,7 +884,6 @@ class Trainer:
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
     def do_train_epoch(self):
-        data = {}
         train_step = 0
         for step, batch in enumerate(self.data_object.train_dataloader):
             train_step = step + 1
@@ -908,7 +906,6 @@ class Trainer:
             return output, target, loss
 
     def step(self, batch, mode="train"):
-        metrics = {}
         for optimizer in self.optimizers:
             optimizer.zero_grad()
 

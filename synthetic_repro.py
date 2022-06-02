@@ -15,7 +15,6 @@ import torch.nn as nn
 import torch.optim as opt
 import torch_geometric
 import torch_geometric.transforms as T
-from dllogger import Logger, StdOutBackend
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch_geometric.loader import NeighborLoader
 from torch_geometric.nn.conv import HeteroConv, MessagePassing, SAGEConv
@@ -655,33 +654,6 @@ class HeteroModule(nn.Module):
         return h
 
 
-# dllogger doesn't accept list but json doesn't serialize tensor/ndarray
-def metrics_list_to_num_dict(metrics):
-    out = {}
-
-    for k, v in metrics.items():
-        if isinstance(v, list):
-            for i, vv in enumerate(v):
-                out["{}_{}".format(k, i)] = vv
-
-        else:
-            out[k] = v
-
-    return out
-
-
-def metrics_values_to_list(metrics):
-    out = {}
-
-    for k, v in metrics.items():
-        if torch.is_tensor(v):
-            out[k] = v.tolist()
-        else:
-            out[k] = v
-
-    return out
-
-
 def run_fit(rank, trainer, child_conn):
     data = trainer.fit_process(rank)
     if rank == 0:
@@ -855,28 +827,18 @@ class Trainer:
 
         return metrics
 
-    def train_procedure(self):
-        self.do_train_epoch()
-        if self.rank == 0:
-            print("TRAIN METRICS")
-            print(self.logged_train_metrics)
-
     def fit_process(self, rank=0):
         self.setup(rank)
-        self.on_train_begin()
+        self.model.train()
+        self.criterion.train()
 
         while self.epoch < self.epochs:
-            self.on_epoch_begin()
-            self.train_procedure()
-            self.on_epoch_end()
-
-        self.on_train_end()
+            self.do_train_epoch()
 
     def setup(self, rank):
         use_ddp = self.n_gpus > 1
 
         self.rank = rank
-        self.logger = setup_logger(self.rank)
 
         if self.n_gpus > 1:
             set_affinity(rank, self.n_gpus)
@@ -923,7 +885,6 @@ class Trainer:
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
     def do_train_epoch(self):
-        self.on_train_epoch_begin()
         data = {}
         train_step = 0
         for step, batch in enumerate(self.data_object.train_dataloader):
@@ -934,7 +895,7 @@ class Trainer:
                 break
 
         self.train_steps = train_step
-        self.on_train_epoch_end()
+        self.on_epoch_end()
 
     def forward_pass(self, batch):
         with torch.cuda.amp.autocast(enabled=self.amp_enabled):
@@ -967,29 +928,6 @@ class Trainer:
         if self.n_gpus > 1:
             loss = reduce_tensor(loss, self.n_gpus, average=True)
 
-    def on_train_begin(self, metrics):
-        self.is_training = True
-
-    def on_train_end(self, metrics):
-        self.logger.flush()
-
-        if self.n_gpus > 1:
-            torch.distributed.barrier()
-
-        self.is_training = False
-
-    def on_train_epoch_begin(self):
-        self.model.train()
-        self.criterion.train()
-        return
-
-    def on_train_epoch_end(self):
-        if self.n_gpus > 1:
-            torch.distributed.barrier()
-
-    def on_epoch_begin(self):
-        if self.n_gpus > 1:
-            torch.distributed.barrier()
 
     def on_epoch_end(self):
         if self.n_gpus > 1:

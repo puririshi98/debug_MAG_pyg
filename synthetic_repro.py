@@ -326,6 +326,7 @@ class Trainer:
 
     def do_train_epoch(self):
         train_step = 0
+        torch_geometric.seed.seed_everything(42)
         for step, batch in enumerate(self.train_dataloader):
             train_step = step + 1
             self.step(batch, mode="train")

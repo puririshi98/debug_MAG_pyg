@@ -320,6 +320,7 @@ class Trainer:
                 self.model,
                 device_ids=[rank],
                 output_device=rank,
+                find_unused_parameters=True
             )
 
         self.device = device

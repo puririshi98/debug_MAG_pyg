@@ -419,3 +419,4 @@ if __name__ == "__main__":
     print()
     print()
     test_mag_workflow(2)
+    print("2 GPU TEST PASSED!!!!")

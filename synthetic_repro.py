@@ -253,15 +253,6 @@ class Trainer:
         Runs self.epochs of training on the provided dataset
         """
 
-        if self.omp_num_threads is None:
-            if self.n_gpus == 0:
-                omp_num_threads = str(mp.cpu_count() // 2)
-            else:
-                omp_num_threads = str(mp.cpu_count() // 2 // self.n_gpus)
-            os.environ["OMP_NUM_THREADS"] = omp_num_threads
-        else:
-            os.environ["OMP_NUM_THREADS"] = self.omp_num_threads
-
         if self.n_gpus > 1:
             parent_conn, child_conn = mp.Pipe()
             pc = mp.spawn(

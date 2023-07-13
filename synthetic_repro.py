@@ -29,7 +29,6 @@ def make_pyg_loader(graph, device):
         shuffle=True,
         drop_last=False,
         input_nodes=("v0", None),
-        num_workers=num_work,
         replace=True,
         transform=T.ToDevice(device),
     )
@@ -281,7 +280,7 @@ class Trainer:
 
         self.rank = rank
 
-        if self.n_gpus > 1:
+        if use_ddp:
 
             dist_init_method = "tcp://{master_ip}:{master_port}".format(
                 master_ip="127.0.0.1", master_port="29500"
